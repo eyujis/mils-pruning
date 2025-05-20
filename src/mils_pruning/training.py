@@ -1,9 +1,11 @@
 import os
 import torch
+from mils_pruning.config import WEIGHTS_DIR
 
-def train(model, train_loader, val_loader, optimizer, criterion, results, early_stopping, epochs=10, device=None, experiment_id="000"):
+
+def train(model, train_loader, val_loader, optimizer, criterion, early_stopping, epochs=10, device=None, experiment_id="000"):
     """
-    Trains a model with early stopping and saves the best model based on validation loss.
+    Trains a model using early stopping and saves only the best model.
 
     Parameters
     ----------
@@ -16,27 +18,25 @@ def train(model, train_loader, val_loader, optimizer, criterion, results, early_
     optimizer : torch.optim.Optimizer
         Optimizer used for training.
     criterion : torch.nn.Module
-        Loss function.
-    results : object or None
-        Tracker for logging results (must implement .update()).
+        Loss function (e.g., nn.CrossEntropyLoss).
     early_stopping : EarlyStopping
-        Early stopping callback.
+        Callback to monitor validation loss and stop training early.
     epochs : int
         Maximum number of training epochs.
     device : torch.device
-        Device to run training on.
+        Device to train on (e.g., torch.device("cuda")).
     experiment_id : str
-        Identifier for saving model weights.
+        Unique identifier used to name the saved model directory.
     """
-    # Create folder to save weights
-    experiment_dir = f"saved_weights/experiment_{experiment_id}"
-    os.makedirs(experiment_dir, exist_ok=True)
+    # Create a directory to store the best model weights
+    experiment_dir = WEIGHTS_DIR / f"experiment_{experiment_id}"
+    experiment_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(epochs):
         total_loss, correct = 0, 0
 
         # ------------------- Training phase -------------------
-        model.train()
+        model.train()  # Set model to training mode
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -45,18 +45,19 @@ def train(model, train_loader, val_loader, optimizer, criterion, results, early_
             loss.backward()
             optimizer.step()
 
-            # Track loss and accuracy
+            # Accumulate total loss and count correct predictions
             total_loss += loss.item() * labels.size(0)
             correct += (outputs.argmax(1) == labels).sum().item()
 
+        # Compute average training loss and accuracy
         avg_train_loss = total_loss / len(train_loader.dataset)
         train_acc = 100 * correct / len(train_loader.dataset)
 
         # ------------------- Validation phase -------------------
-        model.eval()
+        model.eval()  # Set model to evaluation mode
         val_loss = 0
         val_correct = 0
-        with torch.no_grad():
+        with torch.no_grad():  # No gradients needed during validation
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
@@ -64,27 +65,27 @@ def train(model, train_loader, val_loader, optimizer, criterion, results, early_
                 val_loss += loss.item() * labels.size(0)
                 val_correct += (outputs.argmax(1) == labels).sum().item()
 
+        # Compute average validation loss and accuracy
         avg_val_loss = val_loss / len(val_loader.dataset)
         val_acc = 100 * val_correct / len(val_loader.dataset)
 
-        # ------------------- Logging -------------------
-        if results is not None:
-            results.update(avg_train_loss, avg_val_loss, train_acc, val_acc)
-
+        # Print progress for the current epoch
         print(f"Epoch [{epoch+1}/{epochs}], "
               f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
               f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.2f}%")
 
-        # ------------------- Early Stopping -------------------
+        # ------------------- Early stopping check -------------------
         if early_stopping(avg_val_loss, model, epoch):
             print(f"Early stopping triggered at epoch {epoch+1}!")
             print(f"Best model was from epoch {early_stopping.best_epoch+1}.")
             break
 
-    # ------------------- Save Best Model -------------------
-    best_model_path = os.path.join(experiment_dir, "best_model.pt")
+    # ------------------- Save the best model -------------------
+    best_model_path = experiment_dir / "best_model.pt"
     torch.save(early_stopping.best_model_state, best_model_path)
     print(f"Best model saved to: {best_model_path}")
+
+    
 
 
 class EarlyStopping:

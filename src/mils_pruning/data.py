@@ -5,12 +5,11 @@ from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import StratifiedShuffleSplit
 import numpy as np
 
-
+from mils_pruning.config import DATA_DIR
 
 def load_mnist_dataset(img_size=(10, 10), data_root=None):
     if data_root is None:
-        # This resolves to the project root *assuming you run from the notebooks folder*
-        data_root = os.path.abspath(os.path.join(os.getcwd(), "../data"))
+        data_root = DATA_DIR
 
     transform = transforms.Compose([
         transforms.Resize(img_size),

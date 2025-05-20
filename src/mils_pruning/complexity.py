@@ -43,14 +43,13 @@ class BDMComplexityCalc(ModelComplexityCalc):
 
 class EntropyComplexityCalc(ModelComplexityCalc):
     """
-    Computes Shannon entropy over all model weight matrices.
+    Computes Shannon entropy using pybdm.
     """
 
+    def __init__(self, model):
+        super().__init__(model)
+        self.bdm = BDM(ndim=2)
+        self.counters = [self.bdm.decompose_and_count(m) for m in self.matrices]
+
     def compute(self):
-        total_entropy = 0
-        for mat in self.matrices:
-            values, counts = np.unique(mat, return_counts=True)
-            probs = counts / counts.sum()
-            entropy = -np.sum(probs * np.log2(probs))
-            total_entropy += entropy
-        return total_entropy
+        return self.bdm.compute_ent(*self.counters)
