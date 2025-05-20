@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Poetry virtualenvs (if you don't use `poetry config virtualenvs.in-project true`)
+.env
+.venv/
+
+# Virtual environment folders
+env/
+venv/
+
+# Environment and dependency lock files
+poetry.lock
+
+# Logs and coverage
+*.log
+coverage/
+.tox/
+.nox/
+*.cover
+.hypothesis/
+
+# MyPy and Pyre type checker
+.mypy_cache/
+.pyre/
+
+# macOS
+.DS_Store
+
+# VSCode settings
+.vscode/
+
+# PyCharm settings
+.idea/
+
+# Test output
+htmlcov/
+
+# Local notebooks/outputs
+*.nbconvert.ipynb
