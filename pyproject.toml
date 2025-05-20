@@ -11,13 +11,13 @@ packages = [{ include = "mils_pruning", from = "src" }]
 python = ">=3.11"
 numpy = "^1.24"
 matplotlib = "^3.7"
-torch = "^1.0.2"
+torch = "^2.0"
+pybdm = "^0.1.0"
+torchvision = "^0.22.0"
+scikit-learn = "^1.6.1"
 
 [tool.poetry.group.dev.dependencies]
-# You can add dev tools here like:
-# jupyter = "^1.0"
-# black = "^24.0"
-# flake8 = "^6.0"
+jupyter = "^1.1.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
