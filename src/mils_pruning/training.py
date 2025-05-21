@@ -3,7 +3,7 @@ import torch
 from mils_pruning.config import WEIGHTS_DIR
 
 
-def train(model, train_loader, val_loader, optimizer, criterion, early_stopping, epochs=10, device=None, experiment_id="000"):
+def train(model, train_loader, val_loader, optimizer, criterion, early_stopping, epochs=10, device=None, experiment_id=None):
     """
     Trains a model using early stopping and saves only the best model.
 
@@ -29,8 +29,11 @@ def train(model, train_loader, val_loader, optimizer, criterion, early_stopping,
         Unique identifier used to name the saved model directory.
     """
     # Create a directory to store the best model weights
-    experiment_dir = WEIGHTS_DIR / f"experiment_{experiment_id}"
+    # Parse architecture and run ID from experiment_id (e.g., "arch_32_32_run0")
+    arch_dir, run_id = experiment_id.rsplit("_run", 1)
+    experiment_dir = WEIGHTS_DIR / arch_dir / f"run{run_id}"
     experiment_dir.mkdir(parents=True, exist_ok=True)
+
 
     for epoch in range(epochs):
         total_loss, correct = 0, 0
