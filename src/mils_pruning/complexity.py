@@ -9,12 +9,8 @@ class ModelComplexityCalc(ABC):
     Abstract interface for model complexity calculators.
     """
 
-    def __init__(self, model):
-        self.model = model
-        self.matrices = self._get_binarized_weight_matrices(model)
-
     @abstractmethod
-    def compute(self):
+    def compute(self, model):
         pass
 
     def _get_binarized_weight_matrices(self, model):
@@ -32,24 +28,24 @@ class BDMComplexityCalc(ModelComplexityCalc):
     Computes BDM complexity using pybdm.
     """
 
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self):
         self.bdm = BDM(ndim=2)
-        self.counters = [self.bdm.decompose_and_count(m) for m in self.matrices]
 
-    def compute(self):
-        return self.bdm.compute_bdm(*self.counters)
+    def compute(self, model):
+        matrices = self._get_binarized_weight_matrices(model)
+        counters = [self.bdm.decompose_and_count(m) for m in matrices]
+        return self.bdm.compute_bdm(*counters)
 
 
 class EntropyComplexityCalc(ModelComplexityCalc):
     """
-    Computes Shannon entropy using pybdm.
+    Computes Shannon entropy using pybdm's block decomposition.
     """
 
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self):
         self.bdm = BDM(ndim=2)
-        self.counters = [self.bdm.decompose_and_count(m) for m in self.matrices]
 
-    def compute(self):
-        return self.bdm.compute_ent(*self.counters)
+    def compute(self, model):
+        matrices = self._get_binarized_weight_matrices(model)
+        counters = [self.bdm.decompose_and_count(m) for m in matrices]
+        return self.bdm.compute_ent(*counters)

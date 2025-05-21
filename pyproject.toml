@@ -15,6 +15,7 @@ torch = "^2.0"
 pybdm = "^0.1.0"
 torchvision = "^0.22.0"
 scikit-learn = "^1.6.1"
+tqdm = "^4.67.1"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.1.1"

@@ -1,5 +1,5 @@
 from .experiment_runner import run_pruning_experiment
-from .pruning import MILSPruner, RandomPruner
+from .pruning import Pruner, MILSPruner, RandomPruner
 from .eval import test
 from .training import train, EarlyStopping
 from .complexity import BDMComplexityCalc, EntropyComplexityCalc
