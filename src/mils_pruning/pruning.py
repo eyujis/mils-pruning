@@ -166,58 +166,80 @@ class WeightMILSPruner(Pruner):
         model = deepcopy(model)
         layers = get_layer_sequence(model)
 
-        current_counts = {+1: 0, -1: 0}
+        # Count polarity distribution
+        counts = {+1: 0, -1: 0}
         for name, param in model.named_parameters():
             if "weight" in name and param.ndim == 2:
-                current_counts[+1] += (param == 1).sum().item()
-                current_counts[-1] += (param == -1).sum().item()
+                rounded = param.round()
+                counts[+1] += (rounded == 1).sum().item()
+                counts[-1] += (rounded == -1).sum().item()
 
-        target_polarity = +1 if current_counts[+1] >= current_counts[-1] else -1
-        base_complexity = self.calc_cls().compute(model, mode="weight", polarity=target_polarity)
 
-        candidates = []
-        for layer_idx, (name, param) in enumerate(layers):
-            for i in range(param.shape[0]):
-                for j in range(param.shape[1]):
-                    w = param[i, j].item()
-                    if w == 0.0:
-                        continue
-                    polarity = +1 if w > 0 else -1
-                    if polarity != target_polarity:
-                        continue
 
-                    original = w
-                    param.data[i, j] = 0.0
-                    after = self.calc_cls().compute(model, mode="weight", polarity=target_polarity)
-                    delta = base_complexity - after
-                    param.data[i, j] = original
+        total = counts[+1] + counts[-1]
+        if total == 0:
+            print("[Warning] No weights to prune.")
+            return model  # nothing left to prune
 
-                    candidates.append(((layer_idx, i, j), delta))
+        # Balanced allocation of pruning budget
+        n_pos = n_weights // 2
+        n_neg = n_weights - n_pos
 
-        if not candidates:
-            return model
 
-        if self.strategy == "min_increase":
-            pos = [(c, d) for c, d in candidates if d > 0]
-            sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
-        elif self.strategy == "max_increase":
-            sorted_candidates = sorted(candidates, key=lambda x: -x[1])
-        elif self.strategy == "min_absolute":
-            sorted_candidates = sorted(candidates, key=lambda x: abs(x[1]))
-        elif self.strategy == "max_absolute":
-            sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
-        elif self.strategy == "min_decrease":
-            neg = [(c, d) for c, d in candidates if d < 0]
-            sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
-        elif self.strategy == "max_decrease":
-            sorted_candidates = sorted(candidates, key=lambda x: x[1])
+        pruned = 0
+        selected = []
 
-        to_prune = [c[0] for c in sorted_candidates[:n_weights]]
+        for polarity, n_target in [(+1, n_pos), (-1, n_neg)]:
+            if counts[polarity] == 0 or n_target == 0:
+                continue
 
-        for layer_idx, i, j in to_prune:
+            base = self.calc_cls().compute(model, mode="weight", polarity=polarity)
+            candidates = []
+
+            for layer_idx, (name, param) in enumerate(layers):
+                for i in range(param.shape[0]):
+                    for j in range(param.shape[1]):
+                        w = param[i, j].item()
+                        if w == 0.0:
+                            continue
+                        if (w > 0 and polarity != +1) or (w < 0 and polarity != -1):
+                            continue
+
+                        original = w
+                        param.data[i, j] = 0.0
+                        after = self.calc_cls().compute(model, mode="weight", polarity=polarity)
+                        delta = base - after
+                        param.data[i, j] = original
+
+                        candidates.append(((layer_idx, i, j), delta))
+
+            if not candidates:
+                continue
+
+            # Strategy-specific sorting
+            if self.strategy == "min_increase":
+                pos = [(c, d) for c, d in candidates if d > 0]
+                sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
+            elif self.strategy == "max_increase":
+                sorted_candidates = sorted(candidates, key=lambda x: -x[1])
+            elif self.strategy == "min_absolute":
+                sorted_candidates = sorted(candidates, key=lambda x: abs(x[1]))
+            elif self.strategy == "max_absolute":
+                sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
+            elif self.strategy == "min_decrease":
+                neg = [(c, d) for c, d in candidates if d < 0]
+                sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
+            elif self.strategy == "max_decrease":
+                sorted_candidates = sorted(candidates, key=lambda x: x[1])
+
+            selected.extend([c[0] for c in sorted_candidates[:n_target]])
+
+        # Apply all selected prunes
+        for layer_idx, i, j in selected:
             layers[layer_idx][1].data[i, j] = 0.0
 
         return model
+
 
 
 class WeightRandomPruner(Pruner):
