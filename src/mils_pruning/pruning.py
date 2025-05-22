@@ -17,11 +17,7 @@ class Pruner:
 
 def get_layer_sequence(model):
     """
-    Extracts an ordered list of (name, param) tuples corresponding to
-    the linear weight matrices in the model.
-
-    Returns:
-        List of (name, param) tuples for all prunable 2D linear layers.
+    Returns all linear layers with prunable weights.
     """
     return [
         (name, param)
@@ -43,28 +39,20 @@ class RandomPruner(Pruner):
         model = deepcopy(model)
         layers = get_layer_sequence(model)
 
-        pruned = 0
-        while pruned < n_nodes:
-            candidates = []
-            for layer_idx in range(len(layers) - 1):
-                param = layers[layer_idx][1]
-                for i in range(param.shape[0]):
-                    if not torch.all(param[i] == 0.0):
-                        candidates.append((layer_idx, i))
+        candidates = []
+        for layer_idx in range(len(layers) - 1):
+            param = layers[layer_idx][1]
+            for i in range(param.shape[0]):
+                if not torch.all(param[i] == 0.0):
+                    candidates.append((layer_idx, i))
 
-            if not candidates:
-                break
+        to_prune = random.sample(candidates, min(n_nodes, len(candidates)))
 
-            layer_idx, i = random.choice(candidates)
-            curr_param = layers[layer_idx][1]
-            next_param = layers[layer_idx + 1][1]
-
-            curr_param.data[i] = 0.0
-            next_param.data[:, i] = 0.0
-            pruned += 1
+        for layer_idx, i in to_prune:
+            layers[layer_idx][1].data[i] = 0.0
+            layers[layer_idx + 1][1].data[:, i] = 0.0
 
         return model
-
 
 
 class MILSPruner(Pruner):
@@ -72,14 +60,14 @@ class MILSPruner(Pruner):
     MILS-based neuron pruning with configurable complexity-based strategies.
 
     Strategies:
-        - 'min_increase'   : prune neuron that causes the smallest *positive* information contribution.
-                             Falls back to the smallest absolute delta if none are positive.
-        - 'max_increase'   : prune neuron that causes the largest increase in complexity.
-        - 'min_absolute'   : prune neuron with the smallest absolute change in complexity.
-        - 'max_absolute'   : prune neuron with the largest absolute change in complexity.
-        - 'min_decrease'   : prune neuron with the smallest *negative* delta (closest to zero).
-                             Falls back to the most negative delta if no negatives exist.
-        - 'max_decrease'   : prune neuron that causes the largest decrease in complexity.
+        - 'min_increase'   : prune neuron with smallest positive contribution.
+                             Fallback: smallest absolute delta.
+        - 'max_increase'   : prune neuron with largest positive contribution.
+        - 'min_absolute'   : prune neuron with smallest absolute delta.
+        - 'max_absolute'   : prune neuron with largest absolute delta.
+        - 'min_decrease'   : prune neuron with smallest negative delta.
+                             Fallback: most negative delta.
+        - 'max_decrease'   : prune neuron with largest negative delta.
     """
     def __init__(self, method="bdm", strategy="min_absolute"):
         if method == "bdm":
@@ -101,86 +89,70 @@ class MILSPruner(Pruner):
     def prune(self, model: nn.Module, n_nodes: int) -> nn.Module:
         model = deepcopy(model)
         layers = get_layer_sequence(model)
+        base_complexity = self.calc_cls().compute(model, mode="node")
 
-        pruned = 0
-        while pruned < n_nodes:
-            base_complexity = self.calc_cls().compute(model, mode="node")
-            candidates = []
+        candidates = []
+        for layer_idx in range(len(layers) - 1):
+            curr_weights = layers[layer_idx][1]
+            next_weights = layers[layer_idx + 1][1]
 
-            for layer_idx in range(len(layers) - 1):
-                curr_weights = layers[layer_idx][1]
-                next_weights = layers[layer_idx + 1][1]
+            for i in range(curr_weights.shape[0]):
+                if torch.all(curr_weights[i] == 0.0):
+                    continue
 
-                for i in range(curr_weights.shape[0]):
-                    if torch.all(curr_weights[i] == 0.0):
-                        continue
+                row_backup = curr_weights[i].clone()
+                col_backup = next_weights[:, i].clone()
 
-                    row_backup = curr_weights[i].clone()
-                    col_backup = next_weights[:, i].clone()
+                curr_weights.data[i] = 0.0
+                next_weights.data[:, i] = 0.0
 
-                    curr_weights.data[i] = 0.0
-                    next_weights.data[:, i] = 0.0
+                after_complexity = self.calc_cls().compute(model, mode="node")
+                delta = base_complexity - after_complexity
 
-                    after_complexity = self.calc_cls().compute(model, mode="node")
-                    delta = base_complexity - after_complexity
+                candidates.append(((layer_idx, i), delta))
 
-                    candidates.append(((layer_idx, i), delta))
+                curr_weights.data[i] = row_backup
+                next_weights.data[:, i] = col_backup
 
-                    curr_weights.data[i] = row_backup
-                    next_weights.data[:, i] = col_backup
+        if not candidates:
+            return model
 
-            if not candidates:
-                break
+        if self.strategy == "min_increase":
+            pos = [(c, d) for c, d in candidates if d > 0]
+            sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
+        elif self.strategy == "max_increase":
+            sorted_candidates = sorted(candidates, key=lambda x: -x[1])
+        elif self.strategy == "min_absolute":
+            sorted_candidates = sorted(candidates, key=lambda x: abs(x[1]))
+        elif self.strategy == "max_absolute":
+            sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
+        elif self.strategy == "min_decrease":
+            neg = [(c, d) for c, d in candidates if d < 0]
+            sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
+        elif self.strategy == "max_decrease":
+            sorted_candidates = sorted(candidates, key=lambda x: x[1])
 
-            if self.strategy == "min_increase":
-                pos = [(c, d) for c, d in candidates if d > 0]
-                best = min(pos, key=lambda x: x[1])[0] if pos else min(candidates, key=lambda x: abs(x[1]))[0]
+        to_prune = [c[0] for c in sorted_candidates[:n_nodes]]
 
-            elif self.strategy == "max_increase":
-                best = max(candidates, key=lambda x: x[1])[0]
-
-            elif self.strategy == "min_absolute":
-                best = min(candidates, key=lambda x: abs(x[1]))[0]
-
-            elif self.strategy == "max_absolute":
-                best = max(candidates, key=lambda x: abs(x[1]))[0]
-
-            elif self.strategy == "min_decrease":
-                neg = [(c, d) for c, d in candidates if d < 0]
-                best = max(neg, key=lambda x: x[1])[0] if neg else min(candidates, key=lambda x: x[1])[0]
-
-            elif self.strategy == "max_decrease":
-                best = min(candidates, key=lambda x: x[1])[0]
-
-            if best is not None:
-                layer_idx, i = best
-                layers[layer_idx][1].data[i] = 0.0
-                layers[layer_idx + 1][1].data[:, i] = 0.0
-                pruned += 1
-            else:
-                break
+        for layer_idx, i in to_prune:
+            layers[layer_idx][1].data[i] = 0.0
+            layers[layer_idx + 1][1].data[:, i] = 0.0
 
         return model
 
 
 class WeightMILSPruner(Pruner):
     """
-    MILS-based weight pruning using BDM with polarity-specific binary views.
+    MILS-based weight pruning using polarity-specific binary views.
 
-    Polarity-aware pruning prioritizes the currently dominant polarity in the network.
-    For each step, it selects weights with the polarity (+1 or -1) that is more frequent.
-
-    Strategies:
-        - 'min_increase', 'max_increase'
-        - 'min_absolute', 'max_absolute'
-        - 'min_decrease', 'max_decrease'
+    For each step, selects weights with the dominant polarity (+1 or -1).
+    Uses same strategy logic as node-level MILS.
     """
     def __init__(self, method="bdm", strategy="min_absolute"):
         if method != "bdm":
             raise ValueError("Only BDM is currently supported for weight-level MILS.")
 
         self.calc_cls = BDMComplexityCalc
-
         allowed = {
             "min_increase", "max_increase",
             "min_absolute", "max_absolute",
@@ -193,75 +165,65 @@ class WeightMILSPruner(Pruner):
     def prune(self, model: nn.Module, n_weights: int) -> nn.Module:
         model = deepcopy(model)
         layers = get_layer_sequence(model)
-        pruned = 0
 
-        while pruned < n_weights:
-            candidates = []
+        current_counts = {+1: 0, -1: 0}
+        for name, param in model.named_parameters():
+            if "weight" in name and param.ndim == 2:
+                current_counts[+1] += (param == 1).sum().item()
+                current_counts[-1] += (param == -1).sum().item()
 
-            # Count polarity distribution
-            current_counts = {+1: 0, -1: 0}
-            for name, param in model.named_parameters():
-                if "weight" in name and param.ndim == 2:
-                    current_counts[+1] += (param == 1).sum().item()
-                    current_counts[-1] += (param == -1).sum().item()
+        target_polarity = +1 if current_counts[+1] >= current_counts[-1] else -1
+        base_complexity = self.calc_cls().compute(model, mode="weight", polarity=target_polarity)
 
-            target_polarity = +1 if current_counts[+1] >= current_counts[-1] else -1
+        candidates = []
+        for layer_idx, (name, param) in enumerate(layers):
+            for i in range(param.shape[0]):
+                for j in range(param.shape[1]):
+                    w = param[i, j].item()
+                    if w == 0.0:
+                        continue
+                    polarity = +1 if w > 0 else -1
+                    if polarity != target_polarity:
+                        continue
 
-            for layer_idx, (name, param) in enumerate(layers):
-                for i in range(param.shape[0]):
-                    for j in range(param.shape[1]):
-                        w = param[i, j].item()
-                        if w == 0.0:
-                            continue
+                    original = w
+                    param.data[i, j] = 0.0
+                    after = self.calc_cls().compute(model, mode="weight", polarity=target_polarity)
+                    delta = base_complexity - after
+                    param.data[i, j] = original
 
-                        polarity = +1 if w > 0 else -1
-                        if polarity != target_polarity:
-                            continue
+                    candidates.append(((layer_idx, i, j), delta))
 
-                        original = w
-                        base = self.calc_cls().compute(model, mode="weight", polarity=polarity)
-                        param.data[i, j] = 0.0
-                        after = self.calc_cls().compute(model, mode="weight", polarity=polarity)
-                        delta = base - after
-                        param.data[i, j] = original
+        if not candidates:
+            return model
 
-                        candidates.append(((layer_idx, i, j, polarity), delta))
+        if self.strategy == "min_increase":
+            pos = [(c, d) for c, d in candidates if d > 0]
+            sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
+        elif self.strategy == "max_increase":
+            sorted_candidates = sorted(candidates, key=lambda x: -x[1])
+        elif self.strategy == "min_absolute":
+            sorted_candidates = sorted(candidates, key=lambda x: abs(x[1]))
+        elif self.strategy == "max_absolute":
+            sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
+        elif self.strategy == "min_decrease":
+            neg = [(c, d) for c, d in candidates if d < 0]
+            sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
+        elif self.strategy == "max_decrease":
+            sorted_candidates = sorted(candidates, key=lambda x: x[1])
 
-            if not candidates:
-                break
+        to_prune = [c[0] for c in sorted_candidates[:n_weights]]
 
-            if self.strategy == "min_increase":
-                pos = [(c, d) for c, d in candidates if d > 0]
-                best = min(pos, key=lambda x: x[1])[0] if pos else min(candidates, key=lambda x: abs(x[1]))[0]
-
-            elif self.strategy == "max_increase":
-                best = max(candidates, key=lambda x: x[1])[0]
-
-            elif self.strategy == "min_absolute":
-                best = min(candidates, key=lambda x: abs(x[1]))[0]
-
-            elif self.strategy == "max_absolute":
-                best = max(candidates, key=lambda x: abs(x[1]))[0]
-
-            elif self.strategy == "min_decrease":
-                neg = [(c, d) for c, d in candidates if d < 0]
-                best = max(neg, key=lambda x: x[1])[0] if neg else min(candidates, key=lambda x: x[1])[0]
-
-            elif self.strategy == "max_decrease":
-                best = min(candidates, key=lambda x: x[1])[0]
-
-            if best is not None:
-                layer_idx, i, j, polarity = best
-                layers[layer_idx][1].data[i, j] = 0.0
-                pruned += 1
-            else:
-                break
+        for layer_idx, i, j in to_prune:
+            layers[layer_idx][1].data[i, j] = 0.0
 
         return model
-    
+
 
 class WeightRandomPruner(Pruner):
-    """Randomly removes individual nonzero weights from the model."""
+    """
+    Randomly removes `n_weights` individual weights.
+    """
     def __init__(self):
         self.level = "weight"
 
@@ -283,4 +245,3 @@ class WeightRandomPruner(Pruner):
             param.data[i, j] = 0.0
 
         return model
-
