@@ -4,6 +4,8 @@ import numpy as np
 import random
 from copy import deepcopy
 from mils_pruning.complexity import BDMComplexityCalc, EntropyComplexityCalc
+from collections import Counter
+from mils_pruning.model import Binarize, BinaryLinear  # or adjust the import path
 
 
 class Pruner:
@@ -60,14 +62,18 @@ class MILSPruner(Pruner):
     MILS-based neuron pruning with configurable complexity-based strategies.
 
     Strategies:
-        - 'min_increase'   : prune neuron with smallest positive contribution.
-                             Fallback: smallest absolute delta.
-        - 'max_increase'   : prune neuron with largest positive contribution.
-        - 'min_absolute'   : prune neuron with smallest absolute delta.
-        - 'max_absolute'   : prune neuron with largest absolute delta.
-        - 'min_decrease'   : prune neuron with smallest negative delta.
-                             Fallback: most negative delta.
-        - 'max_decrease'   : prune neuron with largest negative delta.
+    - 'min_increase'   : prune weight whose removal causes the smallest *positive* increase in complexity.
+                            Fallback: prune weight with the smallest absolute change in complexity (|Δ|).
+    - 'max_increase'   : prune weight whose removal causes the largest *positive* increase in complexity.
+    - 'min_absolute'   : prune weight whose removal causes the smallest absolute change in complexity (|Δ|),
+                            regardless of direction.
+    - 'max_absolute'   : prune weight whose removal causes the largest absolute change in complexity (|Δ|),
+                            regardless of direction.
+    - 'min_decrease'   : prune weight whose removal causes the smallest *negative* change in complexity
+                            (i.e., smallest simplification).
+                            Fallback: prune weight with the smallest absolute change in complexity (|Δ|).
+    - 'max_decrease'   : prune weight whose removal causes the largest *negative* change in complexity
+                            (i.e., strongest simplification).
     """
     def __init__(self, method="bdm", strategy="min_absolute"):
         if method == "bdm":
@@ -117,20 +123,40 @@ class MILSPruner(Pruner):
         if not candidates:
             return model
 
+        # Strategy-specific sorting
         if self.strategy == "min_increase":
             pos = [(c, d) for c, d in candidates if d > 0]
-            sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
+
+            if len(pos) >= n_nodes:
+                sorted_candidates = sorted(pos, key=lambda x: x[1])
+            else:
+                remaining_needed = n_nodes - len(pos)
+                fallback_pool = [cd for cd in candidates if cd not in pos]
+                fallback_sorted = sorted(fallback_pool, key=lambda x: abs(x[1]))
+                sorted_candidates = sorted(pos, key=lambda x: x[1]) + fallback_sorted[:remaining_needed]
+
         elif self.strategy == "max_increase":
             sorted_candidates = sorted(candidates, key=lambda x: -x[1])
+
         elif self.strategy == "min_absolute":
             sorted_candidates = sorted(candidates, key=lambda x: abs(x[1]))
+
         elif self.strategy == "max_absolute":
             sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
+
         elif self.strategy == "min_decrease":
             neg = [(c, d) for c, d in candidates if d < 0]
-            sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
+
+            if len(neg) >= n_nodes:
+                sorted_candidates = sorted(neg, key=lambda x: -x[1])  # least negative first
+            else:
+                remaining_needed = n_nodes - len(neg)
+                fallback_pool = [cd for cd in candidates if cd not in neg]
+                fallback_sorted = sorted(fallback_pool, key=lambda x: abs(x[1]))
+                sorted_candidates = sorted(neg, key=lambda x: -x[1]) + fallback_sorted[:remaining_needed]
+
         elif self.strategy == "max_decrease":
-            sorted_candidates = sorted(candidates, key=lambda x: x[1])
+            sorted_candidates = sorted(candidates, key=lambda x: x[1])  # most negative first
 
         to_prune = [c[0] for c in sorted_candidates[:n_nodes]]
 
@@ -139,6 +165,7 @@ class MILSPruner(Pruner):
             layers[layer_idx + 1][1].data[:, i] = 0.0
 
         return model
+
 
 
 class WeightMILSPruner(Pruner):
@@ -162,31 +189,67 @@ class WeightMILSPruner(Pruner):
         self.strategy = strategy
         self.level = "weight"
 
+    def count_weight_polarities(self, model: torch.nn.Module) -> dict:
+        """
+        Counts the number of +1 and -1 weights in all BinaryLinear layers
+        after applying binarization (STE).
+        """
+        counts = Counter({+1: 0, -1: 0})
+
+        for name, module in model.named_modules():
+            if isinstance(module, BinaryLinear):
+                # Apply STE binarization to the weight tensor
+                W_b = Binarize.apply(module.weight.data)
+
+                # Count polarity values
+                counts[+1] += (W_b == 1).sum().item()
+                counts[-1] += (W_b == -1).sum().item()
+
+        return dict(counts)
+
+
+
     def prune(self, model: nn.Module, n_weights: int) -> nn.Module:
         model = deepcopy(model)
         layers = get_layer_sequence(model)
 
-        # Count polarity distribution
-        counts = {+1: 0, -1: 0}
-        for name, param in model.named_parameters():
-            if "weight" in name and param.ndim == 2:
-                rounded = param.round()
-                counts[+1] += (rounded == 1).sum().item()
-                counts[-1] += (rounded == -1).sum().item()
-
-
+        # Count polarity distribution using binarized weights
+        counts = self.count_weight_polarities(model)
 
         total = counts[+1] + counts[-1]
         if total == 0:
             print("[Warning] No weights to prune.")
             return model  # nothing left to prune
 
-        # Balanced allocation of pruning budget
-        n_pos = n_weights // 2
-        n_neg = n_weights - n_pos
+        pos = counts[+1]
+        neg = counts[-1]
+        total = pos + neg
 
+        # Target: equal remaining +1 and -1 after pruning
+        target_each = (total - n_weights) // 2
 
-        pruned = 0
+        # Raw plan: prune down to target_each
+        n_pos = max(0, pos - target_each)
+        n_neg = max(0, neg - target_each)
+
+        # Ensure total equals n_weights
+        total_pruned = n_pos + n_neg
+        if total_pruned > n_weights:
+            excess = total_pruned - n_weights
+            if n_pos >= n_neg:
+                n_pos -= excess
+            else:
+                n_neg -= excess
+        elif total_pruned < n_weights:
+            deficit = n_weights - total_pruned
+            if pos - n_pos > neg - n_neg:
+                n_pos += deficit
+            else:
+                n_neg += deficit
+
+        # Safety check
+        assert n_pos + n_neg == n_weights
+
         selected = []
 
         for polarity, n_target in [(+1, n_pos), (-1, n_neg)]:
@@ -197,15 +260,17 @@ class WeightMILSPruner(Pruner):
             candidates = []
 
             for layer_idx, (name, param) in enumerate(layers):
+                # Binarize the entire parameter tensor once
+                binarized = Binarize.apply(param.data)
+
                 for i in range(param.shape[0]):
                     for j in range(param.shape[1]):
-                        w = param[i, j].item()
-                        if w == 0.0:
+                        if param[i, j].item() == 0.0:
                             continue
-                        if (w > 0 and polarity != +1) or (w < 0 and polarity != -1):
+                        if binarized[i, j].item() != polarity:
                             continue
 
-                        original = w
+                        original = param[i, j].item()
                         param.data[i, j] = 0.0
                         after = self.calc_cls().compute(model, mode="weight", polarity=polarity)
                         delta = base - after
@@ -219,7 +284,16 @@ class WeightMILSPruner(Pruner):
             # Strategy-specific sorting
             if self.strategy == "min_increase":
                 pos = [(c, d) for c, d in candidates if d > 0]
-                sorted_candidates = sorted(pos, key=lambda x: x[1]) if pos else sorted(candidates, key=lambda x: abs(x[1]))
+
+                if len(pos) >= n_target:
+                    sorted_candidates = sorted(pos, key=lambda x: x[1])
+                else:
+                    # Fill remainder with smallest absolute deltas from full set (excluding already selected)
+                    remaining_needed = n_target - len(pos)
+                    fallback_pool = [cd for cd in candidates if cd not in pos]
+                    fallback_sorted = sorted(fallback_pool, key=lambda x: abs(x[1]))
+                    sorted_candidates = sorted(pos, key=lambda x: x[1]) + fallback_sorted[:remaining_needed]
+                    
             elif self.strategy == "max_increase":
                 sorted_candidates = sorted(candidates, key=lambda x: -x[1])
             elif self.strategy == "min_absolute":
@@ -228,7 +302,15 @@ class WeightMILSPruner(Pruner):
                 sorted_candidates = sorted(candidates, key=lambda x: -abs(x[1]))
             elif self.strategy == "min_decrease":
                 neg = [(c, d) for c, d in candidates if d < 0]
-                sorted_candidates = sorted(neg, key=lambda x: -x[1]) if neg else sorted(candidates, key=lambda x: x[1])
+
+                if len(neg) >= n_target:
+                    sorted_candidates = sorted(neg, key=lambda x: -x[1])  # least negative first
+                else:
+                    remaining_needed = n_target - len(neg)
+                    fallback_pool = [cd for cd in candidates if cd not in neg]
+                    fallback_sorted = sorted(fallback_pool, key=lambda x: abs(x[1]))
+                    sorted_candidates = sorted(neg, key=lambda x: -x[1]) + fallback_sorted[:remaining_needed]
+            
             elif self.strategy == "max_decrease":
                 sorted_candidates = sorted(candidates, key=lambda x: x[1])
 
@@ -239,7 +321,6 @@ class WeightMILSPruner(Pruner):
             layers[layer_idx][1].data[i, j] = 0.0
 
         return model
-
 
 
 class WeightRandomPruner(Pruner):
