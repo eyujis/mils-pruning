@@ -91,7 +91,7 @@ poetry install
 
 ## 🧠 Credits
 
-- Based on MILS: Minimal Information Loss Subgraphs (Zenil et al. 2024)
+- Based on MILS: Zenil, H., Kiani, N. A., Adams, A., Abrahão, F. S., Rueda-Toicen, A., Zea, A. A., & Tegnér, J. (2018). Minimal algorithmic information loss methods for dimension reduction, feature selection and network sparsification. arXiv preprint [arXiv:1802.05843](https://arxiv.org/abs/1802.05843).
 - Complexity via [pybdm](https://pypi.org/project/pybdm/)
 
 ---
