@@ -8,35 +8,25 @@ def get_model_path(arch_tag: str, run_idx: int) -> Path:
     return Path("saved_weights") / arch_tag / f"run{run_idx}" / "best_model.pt"
 
 
-def get_results_dir(arch_tag: str, level: str) -> Path:
+def get_results_dir(arch_tag: str, level: str, prune_step: int) -> Path:
     """
-    Returns the base results directory for a given architecture and pruning level.
-    Example: results/arch_32_32/nodes/ or results/arch_32_32/weights/
-    
-    Parameters
-    ----------
-    arch_tag : str
-        Architecture tag, e.g. "arch_32_32"
-    level : str
-        Pruning level: must be "node" or "weight"
+    Returns the results directory path for a given architecture, level, and pruning step.
+    Example: results/arch_32_32/nodes/prune_step_32/
     """
     level_map = {"node": "nodes", "weight": "weights"}
     assert level in level_map, f"Invalid level: {level}. Must be 'node' or 'weight'."
-    return Path("results") / arch_tag / level_map[level]
+    return Path("results") / arch_tag / level_map[level] / f"prune_step_{prune_step}"
 
 
-def get_result_file(arch_tag: str, level: str, experiment_name: str, suffix: str) -> Path:
+def get_result_file(
+    arch_tag: str,
+    level: str,
+    experiment_name: str,
+    suffix: str,
+    prune_step: int
+) -> Path:
     """
-    Returns the full path to a specific result file.
-    Example: results/arch_32_32/nodes/mils_min_absolute_run0_accs.npy
-
-    Parameters
-    ----------
-    arch_tag : str
-    level : str
-    experiment_name : str
-        Prefix for the experiment (e.g., 'mils_min_absolute_run0')
-    suffix : str
-        Either 'accs', 'nodes', or 'weights'
+    Returns the full path to a specific result file under the correct structured directory.
+    Example: results/arch_32_32/nodes/prune_step_32/mils_min_absolute_run0_accs.npy
     """
-    return get_results_dir(arch_tag, level) / f"{experiment_name}_{suffix}.npy"
+    return get_results_dir(arch_tag, level, prune_step) / f"{experiment_name}_{suffix}.npy"

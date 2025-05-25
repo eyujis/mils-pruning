@@ -348,3 +348,71 @@ class WeightRandomPruner(Pruner):
             param.data[i, j] = 0.0
 
         return model
+
+
+class SelectiveRandomPruner(Pruner):
+    """
+    Randomly prunes weights, excluding the most 'neutral' ones based on absolute delta.
+
+    Modes:
+        - exclude_mode = "top_k": exclude a fixed number (exclude_value = 100)
+        - exclude_mode = "percent": exclude a fraction of total candidates (e.g., 0.1 for 10%)
+    """
+    def __init__(self, exclude_mode="percent", exclude_value=0.1, method="bdm"):
+        self.level = "weight"
+        assert exclude_mode in {"top_k", "percent"}, "exclude_mode must be 'top_k' or 'percent'"
+        self.exclude_mode = exclude_mode
+        self.exclude_value = exclude_value
+        self.calc_cls = BDMComplexityCalc if method == "bdm" else None
+        assert self.calc_cls is not None, "Only BDM is currently supported."
+
+    def prune(self, model: torch.nn.Module, n_weights: int) -> torch.nn.Module:
+        model = deepcopy(model)
+        layers = get_layer_sequence(model)
+
+        candidates = []
+
+        for polarity in [+1, -1]:
+            base = self.calc_cls().compute(model, mode="weight", polarity=polarity)
+
+            for layer_idx, (name, param) in enumerate(layers):
+                for i in range(param.shape[0]):
+                    for j in range(param.shape[1]):
+                        w = param[i, j].item()
+                        if w == 0.0:
+                            continue
+                        if (w > 0 and polarity != +1) or (w < 0 and polarity != -1):
+                            continue
+
+                        original = w
+                        param.data[i, j] = 0.0
+                        after = self.calc_cls().compute(model, mode="weight", polarity=polarity)
+                        delta = base - after
+                        param.data[i, j] = original
+
+                        candidates.append(((layer_idx, i, j), delta))
+
+        if not candidates:
+            print("[Warning] No eligible weights for pruning.")
+            return model
+
+        # Exclude most neutral weights
+        sorted_by_neutrality = sorted(candidates, key=lambda x: abs(x[1]))
+        if self.exclude_mode == "top_k":
+            k = min(self.exclude_value, len(sorted_by_neutrality))
+        elif self.exclude_mode == "percent":
+            k = int(len(sorted_by_neutrality) * self.exclude_value)
+
+        excluded = set([c[0] for c in sorted_by_neutrality[:k]])
+        pool = [c[0] for c in candidates if c[0] not in excluded]
+
+        if len(pool) == 0:
+            print("[Warning] No weights left to prune after exclusion.")
+            return model
+
+        to_prune = random.sample(pool, min(n_weights, len(pool)))
+
+        for layer_idx, i, j in to_prune:
+            layers[layer_idx][1].data[i, j] = 0.0
+
+        return model

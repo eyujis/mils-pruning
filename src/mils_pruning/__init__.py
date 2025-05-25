@@ -15,3 +15,4 @@ from .model import BinarizedMLP
 from .paths import get_model_path, get_results_dir, get_result_file
 from .run_node_pruning import run_node_pruning_experiments
 from .run_weight_pruning import run_weight_pruning_experiments
+from .plotter import plot_averaged_results, plot_single_run

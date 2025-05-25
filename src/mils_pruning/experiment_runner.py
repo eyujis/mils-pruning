@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import trange
 from mils_pruning.eval import test
+from mils_pruning.paths import get_result_file
 import torch
 
 
@@ -14,23 +15,22 @@ def run_pruning_experiment(
     max_removal_ratio=0.5,
     prune_step=1,
     experiment_name="experiment",
-    output_dir=Path("results")
+    arch_tag="arch_32_32"
 ):
     """
-    Runs an iterative pruning experiment and saves accuracy/activity over steps.
+    Runs an iterative pruning experiment and saves accuracy/activity over steps
+    in a structured results folder based on architecture, level, and prune_step.
     """
 
     model = model.to(device)
     accs = []      # Accuracy at each step
     activity = []  # Active node or weight count at each step
 
-    output_dir.mkdir(parents=True, exist_ok=True)  # Ensure results dir exists
-
-    # --- Pruning level ---
+    # --- Pruning level: "node" or "weight" ---
     level = getattr(pruner, "level", "node")
     assert level in {"node", "weight"}, f"Unknown pruning level: {level}"
 
-    # --- Setup total units and counter ---
+    # --- Count total elements based on level ---
     if level == "node":
         total = sum(p.shape[0] for n, p in model.named_parameters()
                     if "weight" in n and p.requires_grad and p.ndim == 2)
@@ -62,10 +62,9 @@ def run_pruning_experiment(
     initial_active = count_active()
     accs.append(test(model, test_loader, device))
     activity.append(initial_active)
-
     previous_active = initial_active
 
-    # --- Pruning loop ---
+    # --- Iterative pruning loop ---
     for step in trange(steps, desc=f"Pruning ({experiment_name})"):
 
         if level == "weight":
@@ -75,23 +74,39 @@ def run_pruning_experiment(
 
         current_active = count_active()
 
-        if current_active >= previous_active:
-            print(f"[Warning] Active {level}s did not decrease at step {step}: "
-                  f"{previous_active} → {current_active}")
+        expected_active = previous_active - prune_step
 
-        assert current_active < previous_active, (
-            f"[Error] Active {level}s should strictly decrease at step {step}. "
+        if current_active != expected_active:
+            print(f"[Warning] Unexpected change in active {level}s at step {step}: "
+                f"Expected {expected_active}, but got {current_active} "
+                f"(Δ = {previous_active - current_active})")
+
+        assert current_active == expected_active, (
+            f"[Error] Pruned count mismatch at step {step}. "
+            f"Expected exactly {prune_step} {level}s to be removed. "
             f"Previous: {previous_active}, Current: {current_active}"
         )
 
         previous_active = current_active
-
         model.eval()
-        acc = test(model, test_loader, device)
-        accs.append(acc)
+        accs.append(test(model, test_loader, device))
         activity.append(current_active)
 
-    # --- Save results ---
+    # --- Save results using correct directory structure ---
+    # Note: use the constant prune_step (units removed per iteration), not remaining
     suffix = "weights" if level == "weight" else "nodes"
-    np.save(output_dir / f"{experiment_name}_accs.npy", np.array(accs))
-    np.save(output_dir / f"{experiment_name}_{suffix}.npy", np.array(activity))
+
+    # Ensure target folder exists
+    output_dir = get_result_file(arch_tag, level, experiment_name, "accs", prune_step).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save accuracy and activity over steps
+    np.save(
+        get_result_file(arch_tag, level, experiment_name, "accs", prune_step),
+        np.array(accs)
+    )
+    np.save(
+        get_result_file(arch_tag, level, experiment_name, suffix, prune_step),
+        np.array(activity)
+    )
+
